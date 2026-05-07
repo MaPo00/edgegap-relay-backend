@@ -3,63 +3,62 @@ const fetch = require('node-fetch');
 const app = express();
 app.use(express.json());
 
-const EDGEGAP_TOKEN = process.env.EDGEGAP_TOKEN; // токен з env variable
+const EDGEGAP_TOKEN = process.env.EDGEGAP_TOKEN;
 const EDGEGAP_URL = 'https://api.edgegap.com/v1/relays/sessions';
 
-// Створення сесії (хост викликає)
 app.post('/create-session', async (req, res) => {
   try {
     const { hostIp } = req.body;
-    
     const response = await fetch(EDGEGAP_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `token ${EDGEGAP_TOKEN}`
-      },
-      body: JSON.stringify({
-        max_user_count: 4,
-        users: [{ ip: hostIp }]
-      })
+      headers: { 'Content-Type': 'application/json', 'Authorization': `token ${EDGEGAP_TOKEN}` },
+      body: JSON.stringify({ max_user_count: 4, users: [{ ip: hostIp }] })
     });
+    const raw = await response.json();
+    console.log('Edgegap create response:', response.status, JSON.stringify(raw));
+    if (!response.ok) return res.status(response.status).json({ error: raw });
 
-    const data = await response.json();
-    console.log('Edgegap response:', response.status, JSON.stringify(data));
-    
-    if (!response.ok) {
-      return res.status(response.status).json({ error: data });
-    }
-    
-    res.json(data); // session_id, users[0].authorization_token, relay_ip, relay_port
+    // Повертаємо спрощений формат для Unity
+    res.json({
+      session_id: raw.session_id,
+      relay_ip: raw.ip || raw.relay_ip,
+      server_port: raw.ports?.server?.port ?? raw.relay_ports?.server ?? 8888,
+      client_port: raw.ports?.client?.port ?? raw.relay_ports?.client ?? 9999,
+      user_id: raw.users?.[0]?.user_id ?? 1
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Приєднання до сесії (клієнт викликає)
 app.post('/join-session', async (req, res) => {
   try {
     const { sessionId, clientIp } = req.body;
-
-    // Додаємо гравця до існуючої сесії
+    // Додаємо нового гравця до існуючої сесії
     const response = await fetch(`${EDGEGAP_URL}/${sessionId}/users`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `token ${EDGEGAP_TOKEN}`
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `token ${EDGEGAP_TOKEN}` },
       body: JSON.stringify({ ip: clientIp })
     });
+    const raw = await response.json();
+    console.log('Edgegap join response:', response.status, JSON.stringify(raw));
+    if (!response.ok) return res.status(response.status).json({ error: raw });
 
-    const data = await response.json();
-    console.log('Join response:', response.status, JSON.stringify(data));
+    // Отримуємо дані всієї сесії щоб знати relay_ip і порти
+    const sessResponse = await fetch(`${EDGEGAP_URL}/${sessionId}`, {
+      headers: { 'Authorization': `token ${EDGEGAP_TOKEN}` }
+    });
+    const sessData = await sessResponse.json();
+    console.log('Session data:', JSON.stringify(sessData));
 
-    if (!response.ok) {
-      return res.status(response.status).json({ error: data });
-    }
-
-    res.json(data); // authorization_token для цього гравця
+    res.json({
+      session_id: sessionId,
+      relay_ip: sessData.ip || sessData.relay_ip,
+      server_port: sessData.ports?.server?.port ?? 8888,
+      client_port: sessData.ports?.client?.port ?? 9999,
+      user_id: raw.user_id ?? raw.users?.slice(-1)[0]?.user_id ?? 2
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
