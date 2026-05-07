@@ -6,7 +6,6 @@ app.use(express.json());
 const EDGEGAP_TOKEN = process.env.EDGEGAP_TOKEN;
 const EDGEGAP_URL = 'https://api.edgegap.com/v1/relays/sessions';
 
-// Чекаємо поки сесія стане ready
 async function waitForReady(sessionId, maxRetries = 15, delayMs = 2000) {
   for (let i = 0; i < maxRetries; i++) {
     const res = await fetch(`${EDGEGAP_URL}/${sessionId}`, {
@@ -32,15 +31,16 @@ app.post('/create-session', async (req, res) => {
     console.log('Created session:', response.status, JSON.stringify(created));
     if (!response.ok) return res.status(response.status).json({ error: created });
 
-    // Чекаємо поки relay буде готовий
     const data = await waitForReady(created.session_id);
+    const hostUser = data.session_users?.[0];
 
     res.json({
       session_id: data.session_id,
       relay_ip: data.relay.host,
       server_port: data.relay.ports.server.port,
       client_port: data.relay.ports.client.port,
-      user_id: data.session_users?.[0]?.authorization_token ?? 1
+      user_id: hostUser?.authorization_token ?? data.authorization_token ?? 1,
+      session_auth: data.authorization_token
     });
   } catch (err) {
     console.error(err);
@@ -50,31 +50,25 @@ app.post('/create-session', async (req, res) => {
 
 app.post('/join-session', async (req, res) => {
   try {
-    const { sessionId, clientIp } = req.body;
+    const { sessionId } = req.body;
 
-    // Додаємо гравця
-    const joinRes = await fetch(`${EDGEGAP_URL}/${sessionId}/users`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `token ${EDGEGAP_TOKEN}` },
-      body: JSON.stringify({ ip: clientIp })
+    // Просто отримуємо дані існуючої сесії — не намагаємось додати user
+    const sessRes = await fetch(`${EDGEGAP_URL}/${sessionId}`, {
+      headers: { 'Authorization': `token ${EDGEGAP_TOKEN}` }
     });
-    const joinData = await joinRes.json();
-    console.log('Join response:', joinRes.status, JSON.stringify(joinData));
-    if (!joinRes.ok) return res.status(joinRes.status).json({ error: joinData });
+    const data = await sessRes.json();
+    console.log('Session data for join:', sessRes.status, JSON.stringify(data));
 
-    // Чекаємо оновлену сесію з даними для нового гравця
-    const data = await waitForReady(sessionId);
+    if (!sessRes.ok) return res.status(sessRes.status).json({ error: data });
+    if (!data.ready || !data.relay) return res.status(400).json({ error: 'Session not ready' });
 
-    // Знаходимо authorization_token для нашого IP
-    const user = data.session_users?.find(u => u.ip_address === clientIp);
-    const userAuthToken = user?.authorization_token ?? data.session_users?.slice(-1)[0]?.authorization_token ?? 2;
-
+    // Клієнт використовує session authorization_token як свій userId
     res.json({
       session_id: data.session_id,
       relay_ip: data.relay.host,
       server_port: data.relay.ports.server.port,
       client_port: data.relay.ports.client.port,
-      user_id: userAuthToken
+      user_id: data.authorization_token ?? data.session_users?.[0]?.authorization_token ?? 2
     });
   } catch (err) {
     console.error(err);
