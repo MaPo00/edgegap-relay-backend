@@ -28,19 +28,20 @@ app.post('/create-session', async (req, res) => {
       body: JSON.stringify({ users: [{ ip: hostIp }] })
     });
     const created = await response.json();
-    console.log('Created session:', response.status, JSON.stringify(created));
+    console.log('Created:', response.status, JSON.stringify(created));
     if (!response.ok) return res.status(response.status).json({ error: created });
 
     const data = await waitForReady(created.session_id);
     const hostUser = data.session_users?.[0];
+    console.log('Ready! relay:', data.relay.host, 'session_auth:', data.authorization_token);
 
     res.json({
-      session_id: data.session_id,
+      session_id: data.session_id,                          // string "115-S"
       relay_ip: data.relay.host,
       server_port: data.relay.ports.server.port,
       client_port: data.relay.ports.client.port,
-      user_id: hostUser?.authorization_token ?? data.authorization_token ?? 1,
-      session_auth: data.authorization_token
+      user_id: hostUser?.authorization_token ?? 1,          // uint, для transport.userId
+      session_auth: data.authorization_token ?? 0           // uint, для transport.sessionId
     });
   } catch (err) {
     console.error(err);
@@ -51,24 +52,25 @@ app.post('/create-session', async (req, res) => {
 app.post('/join-session', async (req, res) => {
   try {
     const { sessionId } = req.body;
+    console.log('Joining session:', sessionId);
 
-    // Просто отримуємо дані існуючої сесії — не намагаємось додати user
+    // Просто отримуємо дані існуючої сесії
     const sessRes = await fetch(`${EDGEGAP_URL}/${sessionId}`, {
       headers: { 'Authorization': `token ${EDGEGAP_TOKEN}` }
     });
     const data = await sessRes.json();
-    console.log('Session data for join:', sessRes.status, JSON.stringify(data));
+    console.log('Session data:', sessRes.status, JSON.stringify(data));
 
     if (!sessRes.ok) return res.status(sessRes.status).json({ error: data });
     if (!data.ready || !data.relay) return res.status(400).json({ error: 'Session not ready' });
 
-    // Клієнт використовує session authorization_token як свій userId
     res.json({
       session_id: data.session_id,
       relay_ip: data.relay.host,
       server_port: data.relay.ports.server.port,
       client_port: data.relay.ports.client.port,
-      user_id: data.authorization_token ?? data.session_users?.[0]?.authorization_token ?? 2
+      user_id: data.session_users?.[1]?.authorization_token ?? data.session_users?.[0]?.authorization_token ?? 2,
+      session_auth: data.authorization_token ?? 0
     });
   } catch (err) {
     console.error(err);
