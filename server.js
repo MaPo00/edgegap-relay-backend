@@ -6,25 +6,41 @@ app.use(express.json());
 const EDGEGAP_TOKEN = process.env.EDGEGAP_TOKEN;
 const EDGEGAP_URL = 'https://api.edgegap.com/v1/relays/sessions';
 
+// Чекаємо поки сесія стане ready
+async function waitForReady(sessionId, maxRetries = 15, delayMs = 2000) {
+  for (let i = 0; i < maxRetries; i++) {
+    const res = await fetch(`${EDGEGAP_URL}/${sessionId}`, {
+      headers: { 'Authorization': `token ${EDGEGAP_TOKEN}` }
+    });
+    const data = await res.json();
+    console.log(`[${i+1}/${maxRetries}] status: ${data.status}, ready: ${data.ready}`);
+    if (data.ready && data.relay) return data;
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  throw new Error('Timeout waiting for relay to be ready');
+}
+
 app.post('/create-session', async (req, res) => {
   try {
     const { hostIp } = req.body;
     const response = await fetch(EDGEGAP_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `token ${EDGEGAP_TOKEN}` },
-      body: JSON.stringify({ max_user_count: 4, users: [{ ip: hostIp }] })
+      body: JSON.stringify({ users: [{ ip: hostIp }] })
     });
-    const raw = await response.json();
-    console.log('Edgegap create response:', response.status, JSON.stringify(raw));
-    if (!response.ok) return res.status(response.status).json({ error: raw });
+    const created = await response.json();
+    console.log('Created session:', response.status, JSON.stringify(created));
+    if (!response.ok) return res.status(response.status).json({ error: created });
 
-    // Повертаємо спрощений формат для Unity
+    // Чекаємо поки relay буде готовий
+    const data = await waitForReady(created.session_id);
+
     res.json({
-      session_id: raw.session_id,
-      relay_ip: raw.ip || raw.relay_ip,
-      server_port: raw.ports?.server?.port ?? raw.relay_ports?.server ?? 8888,
-      client_port: raw.ports?.client?.port ?? raw.relay_ports?.client ?? 9999,
-      user_id: raw.users?.[0]?.user_id ?? 1
+      session_id: data.session_id,
+      relay_ip: data.relay.host,
+      server_port: data.relay.ports.server.port,
+      client_port: data.relay.ports.client.port,
+      user_id: data.session_users?.[0]?.authorization_token ?? 1
     });
   } catch (err) {
     console.error(err);
@@ -35,29 +51,30 @@ app.post('/create-session', async (req, res) => {
 app.post('/join-session', async (req, res) => {
   try {
     const { sessionId, clientIp } = req.body;
-    // Додаємо нового гравця до існуючої сесії
-    const response = await fetch(`${EDGEGAP_URL}/${sessionId}/users`, {
+
+    // Додаємо гравця
+    const joinRes = await fetch(`${EDGEGAP_URL}/${sessionId}/users`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `token ${EDGEGAP_TOKEN}` },
       body: JSON.stringify({ ip: clientIp })
     });
-    const raw = await response.json();
-    console.log('Edgegap join response:', response.status, JSON.stringify(raw));
-    if (!response.ok) return res.status(response.status).json({ error: raw });
+    const joinData = await joinRes.json();
+    console.log('Join response:', joinRes.status, JSON.stringify(joinData));
+    if (!joinRes.ok) return res.status(joinRes.status).json({ error: joinData });
 
-    // Отримуємо дані всієї сесії щоб знати relay_ip і порти
-    const sessResponse = await fetch(`${EDGEGAP_URL}/${sessionId}`, {
-      headers: { 'Authorization': `token ${EDGEGAP_TOKEN}` }
-    });
-    const sessData = await sessResponse.json();
-    console.log('Session data:', JSON.stringify(sessData));
+    // Чекаємо оновлену сесію з даними для нового гравця
+    const data = await waitForReady(sessionId);
+
+    // Знаходимо authorization_token для нашого IP
+    const user = data.session_users?.find(u => u.ip_address === clientIp);
+    const userAuthToken = user?.authorization_token ?? data.session_users?.slice(-1)[0]?.authorization_token ?? 2;
 
     res.json({
-      session_id: sessionId,
-      relay_ip: sessData.ip || sessData.relay_ip,
-      server_port: sessData.ports?.server?.port ?? 8888,
-      client_port: sessData.ports?.client?.port ?? 9999,
-      user_id: raw.user_id ?? raw.users?.slice(-1)[0]?.user_id ?? 2
+      session_id: data.session_id,
+      relay_ip: data.relay.host,
+      server_port: data.relay.ports.server.port,
+      client_port: data.relay.ports.client.port,
+      user_id: userAuthToken
     });
   } catch (err) {
     console.error(err);
